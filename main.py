@@ -2,11 +2,9 @@ import imaplib
 import os
 import smtplib
 import time
-from email import encoders
-from email.mime.base import MIMEBase
+from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email.mime.application import MIMEApplication
 
 import pandas as pd
 import streamlit as st
@@ -14,8 +12,8 @@ import streamlit as st
 # ================= 1. НАЛАШТУВАННЯ СТОРІНКИ =================
 st.set_page_config(page_title="UF Mail Automation", page_icon="📧", layout="wide")
 
-st.title("📧 Автоматизація розсилки листів з PDF-вкладеннями")
-st.caption("Інструмент для автоматичного підбору файлів за назвою компанії та персоналізованої відправки.")
+st.title("📧 Автоматизація розсилки листів")
+st.caption("Інструмент для персоналізованої відправки листів з можливістю (опціонально) додавати відповідні PDF-файли.")
 
 # ================= 2. БІЧНА ПАНЕЛЬ: SMTP/IMAP ТА АВТОРИЗАЦІЯ =================
 default_email = st.secrets.get("EMAIL_SENDER", "mail@ufincubator.com")
@@ -34,20 +32,17 @@ with st.sidebar:
     delay_seconds = st.slider("Затримка між листами (сек)", min_value=1, max_value=30, value=5)
     test_mode = st.checkbox("🧪 Тестовий режим (надсилати все на мою пошту)", value=True)
     if test_mode:
-        st.info("У тестовому режимі лист надсилатиметься на вашу адресу для перевірки теми та файлу.")
+        st.info("У тестовому режимі лист надсилатиметься на вашу адресу для перевірки теми та вкладення.")
 
 # ================= 3. ФУНКЦІЯ ЗБЕРЕЖЕННЯ В "НАДІСЛАНІ" (IMAP) =================
 def save_to_sent_folder(imap_host, imap_port, user, password, raw_msg_bytes):
-    """Підключається через IMAP і додає копію відправленого листа у папку 'Надіслані'."""
     try:
         imap = imaplib.IMAP4_SSL(imap_host, imap_port)
         imap.login(user, password)
 
-        # Отримуємо список усіх доступних папок
         status, folder_list = imap.list()
         target_folder = None
         
-        # Шукаємо назву папки надісланих (Sent, Sent Messages, Надіслані тощо)
         for folder_entry in folder_list:
             decoded = folder_entry.decode('utf-8', errors='ignore')
             for possible_name in ['Sent', 'INBOX.Sent', 'Sent Messages', 'Надіслані', 'Отправленные']:
@@ -58,9 +53,8 @@ def save_to_sent_folder(imap_host, imap_port, user, password, raw_msg_bytes):
                 break
         
         if not target_folder:
-            target_folder = "Sent"  # За замовчуванням для більшості поштовиків
+            target_folder = "Sent"
 
-        # Зберігаємо лист з міткою \Seen (прочитане)
         imap.append(target_folder, '\\Seen', imaplib.Time2Internaldate(time.time()), raw_msg_bytes)
         imap.logout()
     except Exception as e:
@@ -72,13 +66,13 @@ col_file, col_dir = st.columns(2)
 
 with col_file:
     uploaded_table = st.file_uploader(
-        "📄 Оберіть файл контактів (Excel або CSV)", 
+        "📄 Оберіть файл контактів (Excel або CSV) *Обов'язково*", 
         type=["xlsx", "xls", "csv"]
     )
 
 with col_dir:
     uploaded_pdfs = st.file_uploader(
-        "📂 Оберіть всі PDF-файли (виділіть усі разом у вікні)", 
+        "📂 Оберіть PDF-файли (Опціонально — якщо без файлів, надішлеться лише текст)", 
         type=["pdf"], 
         accept_multiple_files=True
     )
@@ -94,34 +88,28 @@ subject_template = st.text_input(
 
 default_html_body = """<p>Вітаю!</p>
 
-<p>Я Олександр, проєктний менеджер бізнес-інкубатору Ukrainian Future НЦ “Мала академія наук України”. Минулого року ми започаткували <strong>некомерційний освітній проєкт <a href="https://ufincubator.com/ua/pro-biblioteku-materialiv" target="_blank">UF Бібліотека матеріалів</a></strong>, метою якого є познайомити студентів, старшокласників та засновників стартапів з сучасними матеріалами. Наразі в бібліотеці представлено 300 фізичних зразків, у якій відвідувачі можуть ознайомитись з матеріалами та підібрати для своїх прототипів чи наукових досліджень за фізико-хімічними властивостями.</p>
+<p>Нагадую вам про пропозицію партнерства по <strong>UF Бібліотеці матеріалів</strong>.</p>
 
-<p>Окрему увагу ми приділяємо рішенням, які підтримують екологічні принципи, зменшують негативний вплив на довкілля та відповідають стандартам циркулярної економіки.</p>
+<p>Ми вже створили стенд матеріалів від українських виробників і наразі <strong>отримали перші 20 зразків</strong>. Також нам дуже хотілося б бачити серед зразків ваші матеріали, щоб показувати їх студентам, старшокласникам і засновникам стартапів.</p>
 
-<p>Ми ознайомились з продукцією компанії <strong>{company}</strong>, і <strong>хотіли б запропонувати додати матеріали вашої компанії до нашої бібліотеки</strong> у вигляді фізичних зразків. Розміщення зразків абсолютно безкоштовне, детальну офіційну пропозицію додаю до цього листа у форматі PDF.</p>
+<p>Ми готові максимально спростити для вас логістику й самостійно організувати доставку зразка Новою Поштою за наш рахунок.</p>
 
-<p>Підкажіть, будь ласка, <strong>чи цікава вам співпраця з нашим бізнес-інкубатором та розміщення ваших зразків на нашому стенді</strong>? У разі необхідності, можемо провести коротку зустріч онлайн або екскурсію по нашій бібліотеці матеріалів вживу.</p>
+<p>Підкажіть, будь ласка, чи цікава вам ця пропозиція?</p>
 
-<p>--<br>
-<strong>З повагою</strong>,<br>
-Олександр, проєктний менеджер бізнес-інкубатора Ukrainian Future<br>
-НЦ “Мала академія наук України”</p>
-
-<p>🌐 <a href="https://ufincubator.com/ua" target="_blank">Сайт інкубатора</a><br>
-🔹 <a href="https://www.facebook.com/UFincubator" target="_blank">Facebook</a> | <a href="https://www.instagram.com/uf_incubator" target="_blank">Instagram</a> | <a href="https://www.linkedin.com/company/ukrainian-future/posts/?feedView=all" target="_blank">LinkedIn</a></p>
+<p>Гарного дня!</p>
 """
 
 email_body_template = st.text_area(
     "HTML-шаблон тексту листа (використовуйте {company})",
-    height=240,
+    height=220,
     value=default_html_body
 )
 
-# ================= 6. ВАЛІДАЦІЯ, ПОШУК ТА ПРЕВ'Ю =================
+# ================= 6. ВАЛІДАЦІЯ ТА ПОПЕРЕДНІЙ ПЕРЕГЛЯД =================
 st.markdown("---")
-st.subheader("3. Попередній перегляд відповідностей")
+st.subheader("3. Попередній перегляд списку розсилки")
 
-if uploaded_table and uploaded_pdfs:
+if uploaded_table:
     try:
         if uploaded_table.name.lower().endswith(".csv"):
             df = pd.read_csv(uploaded_table)
@@ -137,7 +125,9 @@ if uploaded_table and uploaded_pdfs:
             st.error(f"❌ Не вдалося знайти колонки компанії або email. Знайдені колонки: {list(df.columns)}")
         else:
             df_clean = df.dropna(subset=[company_col, email_col]).drop_duplicates(subset=[company_col]).copy()
-            pdf_dict = {f.name.lower(): f for f in uploaded_pdfs}
+            
+            # Словник з PDF-файлами (якщо користувач їх завантажив)
+            pdf_dict = {f.name.lower(): f for f in uploaded_pdfs} if uploaded_pdfs else {}
 
             matched_data = []
             for _, row in df_clean.iterrows():
@@ -145,32 +135,33 @@ if uploaded_table and uploaded_pdfs:
                 comp_email = str(row[email_col]).strip()
 
                 matched_pdf = None
-                for fname, fobj in pdf_dict.items():
-                    if comp_name.lower() in fname:
-                        matched_pdf = fobj
-                        break
+                if pdf_dict:
+                    for fname, fobj in pdf_dict.items():
+                        if comp_name.lower() in fname:
+                            matched_pdf = fobj
+                            break
 
                 matched_data.append({
                     "Компанія": comp_name,
                     "Email": comp_email,
-                    "Знайдений PDF": matched_pdf.name if matched_pdf else "❌ НЕ ЗНАЙДЕНО",
+                    "Вкладення": f"📎 {matched_pdf.name}" if matched_pdf else "Лише текст (без файлу)",
                     "_file_obj": matched_pdf
                 })
 
-            display_df = pd.DataFrame(matched_data)[["Компанія", "Email", "Знайдений PDF"]]
+            display_df = pd.DataFrame(matched_data)[["Компанія", "Email", "Вкладення"]]
             st.dataframe(display_df, use_container_width=True)
 
             total_count = len(matched_data)
-            ready_count = sum(1 for item in matched_data if item["_file_obj"] is not None)
-            st.write(f"📊 Всього компаній: **{total_count}** | Готово до відправки: **{ready_count}**")
+            with_pdf_count = sum(1 for item in matched_data if item["_file_obj"] is not None)
+            st.write(f"📊 Всього листів до відправки: **{total_count}** (з них із PDF-файлом: **{with_pdf_count}**)")
 
             # ================= 7. ВІДПРАВКА ТА ЗБЕРЕЖЕННЯ =================
             st.markdown("---")
             if st.button("🚀 Запустити розсилку", type="primary"):
                 if not sender_email or not sender_password:
                     st.error("⚠️ Вкажіть Email та Пароль у лівій панелі перед відправкою!")
-                elif ready_count == 0:
-                    st.warning("⚠️ Не знайдено жодного відповідного PDF-файлу.")
+                elif total_count == 0:
+                    st.warning("⚠️ Немає контактів для відправки.")
                 else:
                     progress_bar = st.progress(0)
                     status_text = st.empty()
@@ -188,11 +179,6 @@ if uploaded_table and uploaded_pdfs:
                                 target_to = sender_email if test_mode else item["Email"]
                                 file_obj = item["_file_obj"]
 
-                                if not file_obj:
-                                    log_box.warning(f"⏩ Пропущено {comp}: файл відсутній.")
-                                    progress_bar.progress((i + 1) / total_count)
-                                    continue
-
                                 msg = MIMEMultipart()
                                 msg["From"] = sender_email
                                 msg["To"] = target_to
@@ -201,16 +187,20 @@ if uploaded_table and uploaded_pdfs:
                                 body = email_body_template.format(company=comp)
                                 msg.attach(MIMEText(body, "html", "utf-8"))
 
-                                # Новий варіант: чіткий PDF-тип + підтримка українських літер у назві
-                                pdf_bytes = file_obj.getvalue()
-                                part = MIMEApplication(pdf_bytes, _subtype="pdf")
-                                part.add_header("Content-Disposition", "attachment", filename=("utf-8", "", file_obj.name))
-                                msg.attach(part)
+                                # Прикріплюємо файл, тільки якщо він існує
+                                if file_obj is not None:
+                                    pdf_bytes = file_obj.getvalue()
+                                    part = MIMEApplication(pdf_bytes, _subtype="pdf")
+                                    part.add_header("Content-Disposition", "attachment", filename=("utf-8", "", file_obj.name))
+                                    msg.attach(part)
+                                    file_status_label = f"| Файл: `{file_obj.name}`"
+                                else:
+                                    file_status_label = "| Лише текст"
 
                                 # 1. Відправка адресату через SMTP
                                 server.send_message(msg)
                                 
-                                # 2. Збереження копії у папку "Надіслані" через IMAP
+                                # 2. Збереження копії в IMAP "Надіслані"
                                 save_to_sent_folder(
                                     imap_host=mail_server,
                                     imap_port=int(imap_port),
@@ -220,19 +210,19 @@ if uploaded_table and uploaded_pdfs:
                                 )
 
                                 sent += 1
-                                log_box.success(f"✅ Надіслано та збережено в 'Надіслані' ({sent}/{ready_count}): **{comp}** ➔ `{target_to}` | Файл: `{file_obj.name}`")
+                                log_box.success(f"✅ Надіслано ({sent}/{total_count}): **{comp}** ➔ `{target_to}` {file_status_label}")
 
                                 progress_bar.progress((i + 1) / total_count)
                                 status_text.text(f"Опрацьовано {i + 1} з {total_count}...")
                                 time.sleep(delay_seconds)
 
                         st.balloons()
-                        st.success(f"🎉 Розсилку завершено! Успішно надіслано та заархівовано листів: {sent}")
+                        st.success(f"🎉 Розсилку завершено! Успішно надіслано листів: {sent}")
 
                     except Exception as e:
                         st.error(f"❌ Помилка під час відправки: {e}")
 
     except Exception as err:
-        st.error(f"Помилка зчитування файлів: {err}")
+        st.error(f"Помилка зчитування таблиці: {err}")
 else:
-    st.info("👆 Завантажте файл таблиці ліворуч та виділіть усі PDF-файли праворуч, щоб переглянути зіставлення.")
+    st.info("👆 Завантажте файл таблиці ліворуч, щоб переглянути контакти та розпочати.")

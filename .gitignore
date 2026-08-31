@@ -3,4 +3,4 @@
 *.xls
 *.csv
 *.pdf
-__pycache__/
+__pycache__/	
